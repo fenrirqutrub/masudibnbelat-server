@@ -441,13 +441,21 @@ app.use(
   })
 );
 
+app.use(async (req, res, next) => {
+  try {
+    await db.connect();
+    next();
+  } catch (err) {
+    return res.status(503).json({
+      success: false,
+      message: "Database temporarily unavailable",
+    });
+  }
+});
+
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.set("trust proxy", 1);
-
-// Global database middleware
-app.use("/api/*", Middleware.ensureDatabase);
-app.use("/articles/*", Middleware.ensureDatabase);
 
 // Request logging
 if (process.env.NODE_ENV !== "production") {
