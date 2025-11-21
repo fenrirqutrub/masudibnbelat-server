@@ -12,7 +12,6 @@ const app = express();
 
 // ────────────────────── CONFIG ──────────────────────
 app.set("trust proxy", 1);
-
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
@@ -21,7 +20,7 @@ cloudinary.config({
 
 app.use(
   cors({
-    origin: true,
+    origin: true, // Reflects the request origin, allowing all
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
@@ -30,52 +29,6 @@ app.use(
 );
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
-
-// ────────────────────── MONGODB CONNECTION ──────────────────────
-let isConnected = false;
-
-const connectDB = async () => {
-  if (isConnected && mongoose.connection.readyState === 1) {
-    return true;
-  }
-
-  if (!process.env.MONGODB_URI) {
-    console.error("❌ MONGODB_URI not found in environment variables!");
-    throw new Error("MONGODB_URI is required");
-  }
-
-  try {
-    const opts = {
-      bufferCommands: false, // Disable buffering
-      maxPoolSize: 10,
-      serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000,
-    };
-
-    await mongoose.connect(process.env.MONGODB_URI, opts);
-    isConnected = true;
-    console.log("✅ MongoDB Connected");
-    return true;
-  } catch (err) {
-    console.error("❌ MongoDB Error:", err.message);
-    isConnected = false;
-    throw err;
-  }
-};
-
-// Middleware: Ensure DB connection
-app.use(async (req, res, next) => {
-  try {
-    await connectDB();
-    next();
-  } catch (err) {
-    return res.status(503).json({
-      success: false,
-      message: "Database unavailable. Check MONGODB_URI in Vercel env vars.",
-      hint: "Go to Vercel Dashboard → Settings → Environment Variables",
-    });
-  }
-});
 
 // ────────────────────── FAST LOG ──────────────────────
 app.use((req, _, next) => {
@@ -145,22 +98,25 @@ function escapeRegExp(string) {
 // ────────────────────── MODELS ──────────────────────
 
 // Category Model
-const categorySchema = new mongoose.Schema(
-  {
-    name: {
-      type: String,
-      required: true,
-      unique: true,
-      trim: true,
-      minlength: 2,
-      maxlength: 50,
+const Category = mongoose.model(
+  "Category",
+  new mongoose.Schema(
+    {
+      name: {
+        type: String,
+        required: true,
+        unique: true,
+        trim: true,
+        minlength: 2,
+        maxlength: 50,
+      },
+      slug: { type: String, unique: true, trim: true },
     },
-    slug: { type: String, unique: true, trim: true },
-  },
-  { timestamps: true, collection: "categories" }
+    { timestamps: true, collection: "categories" }
+  )
 );
 
-categorySchema.pre("save", function (next) {
+Category.schema.pre("save", function (next) {
   if (this.isModified("name")) {
     this.slug = this.name
       .toLowerCase()
@@ -170,71 +126,63 @@ categorySchema.pre("save", function (next) {
   next();
 });
 
-const Category =
-  mongoose.models.Category || mongoose.model("Category", categorySchema);
-
 // Unified Article Model
-const articleSchema = new mongoose.Schema(
-  {
-    title: { type: String, required: true, trim: true, minlength: 5 },
-    description: { type: String, required: true, trim: true, minlength: 20 },
-    img: {
-      url: { type: String, required: true },
-      publicId: { type: String, required: true },
+const Article = mongoose.model(
+  "Article",
+  new mongoose.Schema(
+    {
+      title: { type: String, required: true, trim: true, minlength: 5 },
+      description: { type: String, required: true, trim: true, minlength: 20 },
+      img: {
+        url: { type: String, required: true },
+        publicId: { type: String, required: true },
+      },
+      category: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Category",
+        required: true,
+      },
+      categorySlug: { type: String, required: true },
+      likes: { type: Number, default: 0 },
+      views: { type: Number, default: 0 },
     },
-    category: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Category",
-      required: true,
-    },
-    categorySlug: { type: String, required: true },
-    likes: { type: Number, default: 0 },
-    views: { type: Number, default: 0 },
-  },
-  { timestamps: true, collection: "articles" }
+    { timestamps: true, collection: "articles" }
+  ).index({ categorySlug: 1 })
 );
-
-articleSchema.index({ categorySlug: 1 });
-
-const Article =
-  mongoose.models.Article || mongoose.model("Article", articleSchema);
 
 // Like Model
-const likeSchema = new mongoose.Schema(
-  {
-    articleId: {
-      type: mongoose.Schema.Types.ObjectId,
-      required: true,
-      ref: "Article",
+const Like = mongoose.model(
+  "Like",
+  new mongoose.Schema(
+    {
+      articleId: {
+        type: mongoose.Schema.Types.ObjectId,
+        required: true,
+        ref: "Article",
+      },
+      userHash: { type: String, required: true },
     },
-    userHash: { type: String, required: true },
-  },
-  { timestamps: true }
+    { timestamps: true }
+  ).index({ articleId: 1, userHash: 1 }, { unique: true })
 );
-
-likeSchema.index({ articleId: 1, userHash: 1 }, { unique: true });
-
-const Like = mongoose.models.Like || mongoose.model("Like", likeSchema);
 
 // Comment Model
-const commentSchema = new mongoose.Schema(
-  {
-    articleId: {
-      type: mongoose.Schema.Types.ObjectId,
-      required: true,
-      ref: "Article",
+const Comment = mongoose.model(
+  "Comment",
+  new mongoose.Schema(
+    {
+      articleId: {
+        type: mongoose.Schema.Types.ObjectId,
+        required: true,
+        ref: "Article",
+      },
+      text: { type: String, required: true, trim: true, maxlength: 1000 },
+      author: { type: String, default: "Anonymous" },
+      userHash: { type: String, required: true },
     },
-    text: { type: String, required: true, trim: true, maxlength: 1000 },
-    author: { type: String, default: "Anonymous" },
-    userHash: { type: String, required: true },
-  },
-  { timestamps: true }
+    { timestamps: true }
+  ).index({ articleId: 1 })
 );
-
-commentSchema.index({ articleId: 1 });
-
-const Comment =
-  mongoose.models.Comment || mongoose.model("Comment", commentSchema);
 
 // ────────────────────── CATEGORY ROUTES ──────────────────────
 app.post(
@@ -309,12 +257,14 @@ app.delete(
 );
 
 // ────────────────────── PHOTOGRAPHY ROUTES ──────────────────────
+// ────────────────────── PHOTOGRAPHY ROUTES ──────────────────────
 
 // POST: Upload photo to photography category
 app.post(
   "/api/photography",
   upload,
   asyncHandler(async (req, res) => {
+    // Find or create photography category
     let category = await Category.findOne({ slug: "photography" });
     if (!category) {
       category = await Category.create({
@@ -331,8 +281,8 @@ app.post(
 
     const { secure_url, public_id } = await uploadImg(req.file.buffer);
     const article = await Article.create({
-      title: "Photography Image",
-      description: "A beautiful photography moment captured in this image.",
+      title: "Photography Image", // Meets 5 char minimum
+      description: "A beautiful photography moment captured in this image.", // Meets 20 char minimum
       img: { url: secure_url, publicId: public_id },
       category: category._id,
       categorySlug: "photography",
@@ -353,7 +303,7 @@ app.get(
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
-      .select("img views createdAt")
+      .select("img views createdAt") // Only select needed fields
       .lean();
 
     const total = await Article.countDocuments({ categorySlug: "photography" });
@@ -420,6 +370,7 @@ app.delete(
         .json({ success: false, message: "Photo not found" });
     }
 
+    // Delete from Cloudinary
     if (article.img.publicId) {
       try {
         await cloudinary.uploader.destroy(article.img.publicId);
@@ -428,6 +379,7 @@ app.delete(
       }
     }
 
+    // Delete associated likes and comments
     await Promise.all([
       Like.deleteMany({ articleId: article._id }),
       Comment.deleteMany({ articleId: article._id }),
@@ -440,6 +392,7 @@ app.delete(
 
 // ────────────────────── ARTICLE ROUTES ──────────────────────
 
+// Create Article by category slug
 app.post(
   "/articles/:categorySlug",
   upload,
@@ -475,6 +428,7 @@ app.post(
   })
 );
 
+// Get Single Article by ID and Category Slug
 app.get(
   "/api/article-:categorySlug/:id",
   asyncHandler(async (req, res) => {
@@ -509,6 +463,7 @@ app.get(
   })
 );
 
+// Get Articles by Category Slug
 app.get(
   "/api/article-:categorySlug",
   asyncHandler(async (req, res) => {
@@ -547,6 +502,7 @@ app.get(
   })
 );
 
+// Increment View Count
 app.post(
   "/api/article-:categorySlug/:id/view",
   asyncHandler(async (req, res) => {
@@ -570,6 +526,7 @@ app.post(
   })
 );
 
+// Like Toggle
 app.post(
   "/api/article-:categorySlug/:id/like",
   asyncHandler(async (req, res) => {
@@ -601,6 +558,7 @@ app.post(
   })
 );
 
+// Get Comments
 app.get(
   "/api/article-:categorySlug/:id/comments",
   asyncHandler(async (req, res) => {
@@ -623,6 +581,7 @@ app.get(
   })
 );
 
+// Add Comment
 app.post(
   "/api/article-:categorySlug/:id/comments",
   asyncHandler(async (req, res) => {
@@ -659,6 +618,7 @@ app.post(
   })
 );
 
+// Share
 app.post(
   "/api/article-:categorySlug/:id/share",
   asyncHandler(async (req, res) => {
@@ -681,9 +641,7 @@ app.post(
 app.get("/", (_, res) =>
   res.json({
     name: "Masud ibn Belat API",
-    status: isConnected ? "✅ running" : "❌ database disconnected",
-    mongodb:
-      mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+    status: "running",
     time: new Date().toLocaleString("en-US", { timeZone: "Asia/Dhaka" }),
   })
 );
@@ -692,10 +650,6 @@ app.get("/health", (_, res) =>
   res.json({
     db: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
     uptime: process.uptime(),
-    env: {
-      hasMongoUri: !!process.env.MONGODB_URI,
-      hasCloudinary: !!process.env.CLOUDINARY_CLOUD_NAME,
-    },
   })
 );
 
@@ -712,11 +666,20 @@ app.use((err, _, res, __) => {
 
 // ────────────────────── START SERVER ──────────────────────
 const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(
+    `BD Time: ${new Date().toLocaleString("en-US", { timeZone: "Asia/Dhaka" })}`
+  );
+});
 
-if (process.env.NODE_ENV !== "production") {
-  app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
-}
+mongoose
+  .connect(process.env.MONGODB_URI, {
+    maxPoolSize: 10,
+    serverSelectionTimeoutMS: 5000,
+    socketTimeoutMS: 45000,
+  })
+  .then(() => console.log("MongoDB Connected"))
+  .catch((err) => console.error("MongoDB Error:", err.message));
 
 export default app;
