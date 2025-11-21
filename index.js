@@ -12,6 +12,28 @@ const app = express();
 
 // ────────────────────── CONFIG ──────────────────────
 app.set("trust proxy", 1);
+
+// Validate environment variables
+const requiredEnvVars = [
+  "MONGODB_URI",
+  "CLOUDINARY_CLOUD_NAME",
+  "CLOUDINARY_API_KEY",
+  "CLOUDINARY_API_SECRET",
+];
+const missingEnvVars = requiredEnvVars.filter(
+  (varName) => !process.env[varName]
+);
+
+if (missingEnvVars.length > 0) {
+  console.error(
+    "❌ Missing required environment variables:",
+    missingEnvVars.join(", ")
+  );
+  console.error(
+    "Please set these in your Vercel dashboard under Project Settings → Environment Variables"
+  );
+}
+
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
@@ -30,14 +52,48 @@ app.use(
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-mongoose
-  .connect(process.env.MONGODB_URI, {
-    maxPoolSize: 10,
-    serverSelectionTimeoutMS: 5000,
-    socketTimeoutMS: 45000,
-  })
-  .then(() => console.log("MongoDB Connected"))
-  .catch((err) => console.error("MongoDB Error:", err.message));
+// MongoDB Connection with better error handling
+let isConnected = false;
+
+const connectDB = async () => {
+  if (isConnected) {
+    return;
+  }
+
+  if (!process.env.MONGODB_URI) {
+    throw new Error("MONGODB_URI is not defined in environment variables");
+  }
+
+  try {
+    await mongoose.connect(process.env.MONGODB_URI, {
+      maxPoolSize: 10,
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
+    });
+    isConnected = true;
+    console.log("✅ MongoDB Connected");
+  } catch (err) {
+    console.error("❌ MongoDB Connection Error:", err.message);
+    throw err;
+  }
+};
+
+// Middleware to ensure DB connection before handling requests
+app.use(async (req, res, next) => {
+  if (!isConnected) {
+    try {
+      await connectDB();
+    } catch (err) {
+      return res.status(503).json({
+        success: false,
+        message:
+          "Database connection unavailable. Please check environment variables.",
+        error: err.message,
+      });
+    }
+  }
+  next();
+});
 
 // ────────────────────── FAST LOG ──────────────────────
 app.use((req, _, next) => {
@@ -266,7 +322,6 @@ app.delete(
 );
 
 // ────────────────────── PHOTOGRAPHY ROUTES ──────────────────────
-// ────────────────────── PHOTOGRAPHY ROUTES ──────────────────────
 
 // POST: Upload photo to photography category
 app.post(
@@ -290,8 +345,8 @@ app.post(
 
     const { secure_url, public_id } = await uploadImg(req.file.buffer);
     const article = await Article.create({
-      title: "Photography Image", // Meets 5 char minimum
-      description: "A beautiful photography moment captured in this image.", // Meets 20 char minimum
+      title: "Photography Image",
+      description: "A beautiful photography moment captured in this image.",
       img: { url: secure_url, publicId: public_id },
       category: category._id,
       categorySlug: "photography",
@@ -312,7 +367,7 @@ app.get(
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
-      .select("img views createdAt") // Only select needed fields
+      .select("img views createdAt")
       .lean();
 
     const total = await Article.countDocuments({ categorySlug: "photography" });
@@ -650,8 +705,12 @@ app.post(
 app.get("/", (_, res) =>
   res.json({
     name: "Masud ibn Belat API",
-    status: "running",
+    status: isConnected ? "running" : "database disconnected",
     time: new Date().toLocaleString("en-US", { timeZone: "Asia/Dhaka" }),
+    env: {
+      hasMongoUri: !!process.env.MONGODB_URI,
+      hasCloudinary: !!process.env.CLOUDINARY_CLOUD_NAME,
+    },
   })
 );
 
@@ -659,6 +718,7 @@ app.get("/health", (_, res) =>
   res.json({
     db: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
     uptime: process.uptime(),
+    isConnected,
   })
 );
 
@@ -675,11 +735,17 @@ app.use((err, _, res, __) => {
 
 // ────────────────────── START SERVER ──────────────────────
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-  console.log(
-    `BD Time: ${new Date().toLocaleString("en-US", { timeZone: "Asia/Dhaka" })}`
-  );
-});
+
+// For Vercel, don't call app.listen()
+if (process.env.NODE_ENV !== "production") {
+  app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(
+      `BD Time: ${new Date().toLocaleString("en-US", {
+        timeZone: "Asia/Dhaka",
+      })}`
+    );
+  });
+}
 
 export default app;
