@@ -10,6 +10,48 @@ import crypto from "crypto";
 dotenv.config();
 const app = express();
 
+// ────────────────────── MONGODB CONNECTION FIX ──────────────────────
+let isConnected = false;
+
+const connectDB = async () => {
+  if (isConnected) {
+    console.log("Using existing MongoDB connection");
+    return;
+  }
+
+  try {
+    mongoose.set("strictQuery", false);
+    mongoose.set("bufferCommands", false); // CRITICAL: Disable buffering
+
+    const conn = await mongoose.connect(process.env.MONGODB_URI, {
+      maxPoolSize: 10,
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
+      family: 4, // Use IPv4
+    });
+
+    isConnected = conn.connections[0].readyState === 1;
+    console.log("MongoDB Connected");
+  } catch (err) {
+    console.error("MongoDB Connection Error:", err.message);
+    isConnected = false;
+    throw err;
+  }
+};
+
+// Middleware to ensure DB connection before each request
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
+    res.status(503).json({
+      success: false,
+      message: "Database connection failed. Please try again.",
+    });
+  }
+});
+
 // ────────────────────── CONFIG ──────────────────────
 app.set("trust proxy", 1);
 cloudinary.config({
@@ -98,25 +140,22 @@ function escapeRegExp(string) {
 // ────────────────────── MODELS ──────────────────────
 
 // Category Model
-const Category = mongoose.model(
-  "Category",
-  new mongoose.Schema(
-    {
-      name: {
-        type: String,
-        required: true,
-        unique: true,
-        trim: true,
-        minlength: 2,
-        maxlength: 50,
-      },
-      slug: { type: String, unique: true, trim: true },
+const categorySchema = new mongoose.Schema(
+  {
+    name: {
+      type: String,
+      required: true,
+      unique: true,
+      trim: true,
+      minlength: 2,
+      maxlength: 50,
     },
-    { timestamps: true, collection: "categories" }
-  )
+    slug: { type: String, unique: true, trim: true },
+  },
+  { timestamps: true, collection: "categories" }
 );
 
-Category.schema.pre("save", function (next) {
+categorySchema.pre("save", function (next) {
   if (this.isModified("name")) {
     this.slug = this.name
       .toLowerCase()
@@ -126,46 +165,53 @@ Category.schema.pre("save", function (next) {
   next();
 });
 
+const Category =
+  mongoose.models.Category || mongoose.model("Category", categorySchema);
+
 // Unified Article Model
-const Article = mongoose.model(
-  "Article",
-  new mongoose.Schema(
-    {
-      title: { type: String, required: true, trim: true, minlength: 5 },
-      description: { type: String, required: true, trim: true, minlength: 20 },
-      img: {
-        url: { type: String, required: true },
-        publicId: { type: String, required: true },
-      },
-      category: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "Category",
-        required: true,
-      },
-      categorySlug: { type: String, required: true },
-      views: { type: Number, default: 0 },
+const articleSchema = new mongoose.Schema(
+  {
+    title: { type: String, required: true, trim: true, minlength: 5 },
+    description: { type: String, required: true, trim: true, minlength: 20 },
+    img: {
+      url: { type: String, required: true },
+      publicId: { type: String, required: true },
     },
-    { timestamps: true, collection: "articles" }
-  ).index({ categorySlug: 1 })
+    category: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Category",
+      required: true,
+    },
+    categorySlug: { type: String, required: true },
+    views: { type: Number, default: 0 },
+  },
+  { timestamps: true, collection: "articles" }
 );
 
+articleSchema.index({ categorySlug: 1 });
+
+const Article =
+  mongoose.models.Article || mongoose.model("Article", articleSchema);
+
 // Comment Model
-const Comment = mongoose.model(
-  "Comment",
-  new mongoose.Schema(
-    {
-      articleId: {
-        type: mongoose.Schema.Types.ObjectId,
-        required: true,
-        ref: "Article",
-      },
-      text: { type: String, required: true, trim: true, maxlength: 1000 },
-      author: { type: String, default: "Anonymous" },
-      userHash: { type: String, required: true },
+const commentSchema = new mongoose.Schema(
+  {
+    articleId: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: true,
+      ref: "Article",
     },
-    { timestamps: true }
-  ).index({ articleId: 1 })
+    text: { type: String, required: true, trim: true, maxlength: 1000 },
+    author: { type: String, default: "Anonymous" },
+    userHash: { type: String, required: true },
+  },
+  { timestamps: true }
 );
+
+commentSchema.index({ articleId: 1 });
+
+const Comment =
+  mongoose.models.Comment || mongoose.model("Comment", commentSchema);
 
 // ────────────────────── CATEGORY ROUTES ──────────────────────
 app.post(
@@ -612,20 +658,18 @@ app.use((err, _, res, __) => {
 
 // ────────────────────── START SERVER ──────────────────────
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-  console.log(
-    `BD Time: ${new Date().toLocaleString("en-US", { timeZone: "Asia/Dhaka" })}`
-  );
-});
 
-mongoose
-  .connect(process.env.MONGODB_URI, {
-    maxPoolSize: 10,
-    serverSelectionTimeoutMS: 5000,
-    socketTimeoutMS: 45000,
-  })
-  .then(() => console.log("MongoDB Connected"))
-  .catch((err) => console.error("MongoDB Error:", err.message));
+// Only start server if not in serverless environment
+if (process.env.NODE_ENV !== "production") {
+  app.listen(PORT, async () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(
+      `BD Time: ${new Date().toLocaleString("en-US", {
+        timeZone: "Asia/Dhaka",
+      })}`
+    );
+    await connectDB();
+  });
+}
 
 export default app;
