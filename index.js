@@ -29,7 +29,16 @@ class DatabaseManager {
     mongoose.connection.on("connected", () => {
       this.isConnected = true;
       this.retryAttempts = 0;
-      console.log("✅ MongoDB Connected");
+      console.log(`
+
+        ╔═══════════════════════════════════════════╗
+        ║                                           ║
+        ║          ✅ MongoDB Connected 😍          ║
+        ║                                           ║
+        ╚═══════════════════════════════════════════╝
+        
+        
+        `);
     });
 
     mongoose.connection.on("disconnected", () => {
@@ -737,7 +746,7 @@ app.post(
 );
 
 app.get(
-  "/api/article-:categorySlug",
+  "/api/articles/:categorySlug",
   Middleware.asyncHandler(async (req, res) => {
     const Article = ModelFactory.getArticle();
     const Comment = ModelFactory.getComment();
@@ -791,7 +800,7 @@ app.get(
 );
 
 app.get(
-  "/api/article-:categorySlug/:id",
+  "/api/articles/:categorySlug/:id",
   Middleware.validateId(),
   Middleware.asyncHandler(async (req, res) => {
     const Article = ModelFactory.getArticle();
@@ -848,7 +857,7 @@ app.post(
 // 💬 COMMENT ROUTES
 // ═══════════════════════════════════════════════════════════════
 app.get(
-  "/api/article-:categorySlug/:id/comments",
+  "/api/articles/:categorySlug/:id/comments",
   Middleware.validateId(),
   Middleware.asyncHandler(async (req, res) => {
     const Article = ModelFactory.getArticle();
@@ -878,7 +887,7 @@ app.get(
 );
 
 app.post(
-  "/api/article-:categorySlug/:id/comments",
+  "/api/articles/:categorySlug/:id/comments",
   Middleware.validateId(),
   Middleware.validateBody(schemas.comment),
   Middleware.rateLimit(60000, 10),
@@ -986,8 +995,10 @@ if (process.env.NODE_ENV !== "production") {
     console.log(`
 ╔══════════════════════════════════════════╗
 ║  🚀 Server Running                       ║
-║  📍 http://localhost:${PORT}             ║
-║  🕐 ${new Date().toLocaleString("en-US", { timeZone: "Asia/Dhaka" })}  ║
+║  📍 http://localhost:${PORT}              ║
+║  🕐 ${new Date().toLocaleString("en-US", {
+      timeZone: "Asia/Dhaka",
+    })}                                     ║
 ╚═══════════════════════════════════════════╝
     `);
     await db.connect();
