@@ -143,27 +143,10 @@ const Article = mongoose.model(
         required: true,
       },
       categorySlug: { type: String, required: true },
-      likes: { type: Number, default: 0 },
       views: { type: Number, default: 0 },
     },
     { timestamps: true, collection: "articles" }
   ).index({ categorySlug: 1 })
-);
-
-// Like Model
-const Like = mongoose.model(
-  "Like",
-  new mongoose.Schema(
-    {
-      articleId: {
-        type: mongoose.Schema.Types.ObjectId,
-        required: true,
-        ref: "Article",
-      },
-      userHash: { type: String, required: true },
-    },
-    { timestamps: true }
-  ).index({ articleId: 1, userHash: 1 }, { unique: true })
 );
 
 // Comment Model
@@ -257,7 +240,6 @@ app.delete(
 );
 
 // ────────────────────── PHOTOGRAPHY ROUTES ──────────────────────
-// ────────────────────── PHOTOGRAPHY ROUTES ──────────────────────
 
 // POST: Upload photo to photography category
 app.post(
@@ -281,8 +263,8 @@ app.post(
 
     const { secure_url, public_id } = await uploadImg(req.file.buffer);
     const article = await Article.create({
-      title: "Photography Image", // Meets 5 char minimum
-      description: "A beautiful photography moment captured in this image.", // Meets 20 char minimum
+      title: "Photography Image",
+      description: "A beautiful photography moment captured in this image.",
       img: { url: secure_url, publicId: public_id },
       category: category._id,
       categorySlug: "photography",
@@ -303,7 +285,7 @@ app.get(
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
-      .select("img views createdAt") // Only select needed fields
+      .select("img views createdAt")
       .lean();
 
     const total = await Article.countDocuments({ categorySlug: "photography" });
@@ -379,9 +361,8 @@ app.delete(
       }
     }
 
-    // Delete associated likes and comments
+    // Delete associated comments
     await Promise.all([
-      Like.deleteMany({ articleId: article._id }),
       Comment.deleteMany({ articleId: article._id }),
       Article.deleteOne({ _id: article._id }),
     ]);
@@ -446,8 +427,6 @@ app.get(
         .status(404)
         .json({ success: false, message: "Article not found" });
 
-    const userHash = getUserHash(req);
-    const liked = await Like.exists({ articleId: id, userHash });
     const commentCount = await Comment.countDocuments({ articleId: id });
 
     res.json({
@@ -456,7 +435,6 @@ app.get(
         ...article.toObject(),
         _id: article._id.toString(),
         timeAgo: timeAgo(article.createdAt),
-        likedByUser: !!liked,
         comments: commentCount,
       },
     });
@@ -523,38 +501,6 @@ app.post(
         .json({ success: false, message: "Article not found" });
 
     res.json({ success: true, data: { views: article.views } });
-  })
-);
-
-// Like Toggle
-app.post(
-  "/api/article-:categorySlug/:id/like",
-  asyncHandler(async (req, res) => {
-    const { id, categorySlug } = req.params;
-
-    if (!validId(id))
-      return res.status(400).json({ success: false, message: "Invalid ID" });
-
-    const article = await Article.findOne({ _id: id, categorySlug });
-    if (!article)
-      return res
-        .status(404)
-        .json({ success: false, message: "Article not found" });
-
-    const userHash = getUserHash(req);
-    const existing = await Like.findOne({ articleId: id, userHash });
-
-    if (existing) {
-      await Like.deleteOne({ _id: existing._id });
-      article.likes -= 1;
-      await article.save();
-      return res.json({ success: true, liked: false, likes: article.likes });
-    }
-
-    await Like.create({ articleId: id, userHash });
-    article.likes += 1;
-    await article.save();
-    res.json({ success: true, liked: true, likes: article.likes });
   })
 );
 
