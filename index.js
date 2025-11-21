@@ -8,49 +8,40 @@ import Joi from "joi";
 import crypto from "crypto";
 
 dotenv.config();
-const app = express();
 
 // ────────────────────── MONGODB CONNECTION FIX ──────────────────────
-let isConnected = false;
+// CRITICAL: Disable buffering BEFORE any models are created
+mongoose.set("strictQuery", false);
+mongoose.set("bufferCommands", false);
+mongoose.set("bufferTimeoutMS", 30000);
+
+let cachedDb = null;
 
 const connectDB = async () => {
-  if (isConnected) {
-    console.log("Using existing MongoDB connection");
-    return;
+  if (cachedDb && mongoose.connection.readyState === 1) {
+    return cachedDb;
   }
 
   try {
-    mongoose.set("strictQuery", false);
-    mongoose.set("bufferCommands", false); // CRITICAL: Disable buffering
-
-    const conn = await mongoose.connect(process.env.MONGODB_URI, {
+    const db = await mongoose.connect(process.env.MONGODB_URI, {
       maxPoolSize: 10,
-      serverSelectionTimeoutMS: 5000,
+      minPoolSize: 2,
+      serverSelectionTimeoutMS: 10000,
       socketTimeoutMS: 45000,
-      family: 4, // Use IPv4
+      connectTimeoutMS: 10000,
     });
 
-    isConnected = conn.connections[0].readyState === 1;
-    console.log("MongoDB Connected");
+    cachedDb = db;
+    console.log("✅ MongoDB Connected");
+    return db;
   } catch (err) {
-    console.error("MongoDB Connection Error:", err.message);
-    isConnected = false;
-    throw err;
+    console.error("❌ MongoDB Error:", err.message);
+    cachedDb = null;
+    throw new Error("Database connection failed");
   }
 };
 
-// Middleware to ensure DB connection before each request
-app.use(async (req, res, next) => {
-  try {
-    await connectDB();
-    next();
-  } catch (err) {
-    res.status(503).json({
-      success: false,
-      message: "Database connection failed. Please try again.",
-    });
-  }
-});
+const app = express();
 
 // ────────────────────── CONFIG ──────────────────────
 app.set("trust proxy", 1);
@@ -71,6 +62,31 @@ app.use(
 );
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+
+// Ensure DB connection for API routes
+app.use("/api/*", async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
+    return res.status(503).json({
+      success: false,
+      message: "Service temporarily unavailable",
+    });
+  }
+});
+
+app.use("/articles/*", async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
+    return res.status(503).json({
+      success: false,
+      message: "Service temporarily unavailable",
+    });
+  }
+});
 
 // ────────────────────── FAST LOG ──────────────────────
 app.use((req, _, next) => {
@@ -140,78 +156,97 @@ function escapeRegExp(string) {
 // ────────────────────── MODELS ──────────────────────
 
 // Category Model
-const categorySchema = new mongoose.Schema(
-  {
-    name: {
-      type: String,
-      required: true,
-      unique: true,
-      trim: true,
-      minlength: 2,
-      maxlength: 50,
-    },
-    slug: { type: String, unique: true, trim: true },
-  },
-  { timestamps: true, collection: "categories" }
-);
-
-categorySchema.pre("save", function (next) {
-  if (this.isModified("name")) {
-    this.slug = this.name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/(^-|-$)/g, "");
+const getCategoryModel = () => {
+  if (mongoose.models.Category) {
+    return mongoose.models.Category;
   }
-  next();
-});
 
-const Category =
-  mongoose.models.Category || mongoose.model("Category", categorySchema);
+  const categorySchema = new mongoose.Schema(
+    {
+      name: {
+        type: String,
+        required: true,
+        unique: true,
+        trim: true,
+        minlength: 2,
+        maxlength: 50,
+      },
+      slug: { type: String, unique: true, trim: true },
+    },
+    { timestamps: true, collection: "categories" }
+  );
+
+  categorySchema.pre("save", function (next) {
+    if (this.isModified("name")) {
+      this.slug = this.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, "");
+    }
+    next();
+  });
+
+  return mongoose.model("Category", categorySchema);
+};
+
+const Category = getCategoryModel();
 
 // Unified Article Model
-const articleSchema = new mongoose.Schema(
-  {
-    title: { type: String, required: true, trim: true, minlength: 5 },
-    description: { type: String, required: true, trim: true, minlength: 20 },
-    img: {
-      url: { type: String, required: true },
-      publicId: { type: String, required: true },
-    },
-    category: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Category",
-      required: true,
-    },
-    categorySlug: { type: String, required: true },
-    views: { type: Number, default: 0 },
-  },
-  { timestamps: true, collection: "articles" }
-);
+const getArticleModel = () => {
+  if (mongoose.models.Article) {
+    return mongoose.models.Article;
+  }
 
-articleSchema.index({ categorySlug: 1 });
+  const articleSchema = new mongoose.Schema(
+    {
+      title: { type: String, required: true, trim: true, minlength: 5 },
+      description: { type: String, required: true, trim: true, minlength: 20 },
+      img: {
+        url: { type: String, required: true },
+        publicId: { type: String, required: true },
+      },
+      category: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Category",
+        required: true,
+      },
+      categorySlug: { type: String, required: true },
+      views: { type: Number, default: 0 },
+    },
+    { timestamps: true, collection: "articles" }
+  );
 
-const Article =
-  mongoose.models.Article || mongoose.model("Article", articleSchema);
+  articleSchema.index({ categorySlug: 1 });
+  return mongoose.model("Article", articleSchema);
+};
+
+const Article = getArticleModel();
 
 // Comment Model
-const commentSchema = new mongoose.Schema(
-  {
-    articleId: {
-      type: mongoose.Schema.Types.ObjectId,
-      required: true,
-      ref: "Article",
+const getCommentModel = () => {
+  if (mongoose.models.Comment) {
+    return mongoose.models.Comment;
+  }
+
+  const commentSchema = new mongoose.Schema(
+    {
+      articleId: {
+        type: mongoose.Schema.Types.ObjectId,
+        required: true,
+        ref: "Article",
+      },
+      text: { type: String, required: true, trim: true, maxlength: 1000 },
+      author: { type: String, default: "Anonymous" },
+      userHash: { type: String, required: true },
     },
-    text: { type: String, required: true, trim: true, maxlength: 1000 },
-    author: { type: String, default: "Anonymous" },
-    userHash: { type: String, required: true },
-  },
-  { timestamps: true }
-);
+    { timestamps: true }
+  );
 
-commentSchema.index({ articleId: 1 });
+  commentSchema.index({ articleId: 1 });
+  return mongoose.model("Comment", commentSchema);
+};
 
-const Comment =
-  mongoose.models.Comment || mongoose.model("Comment", commentSchema);
+const Comment = getCommentModel();
 
 // ────────────────────── CATEGORY ROUTES ──────────────────────
 app.post(
