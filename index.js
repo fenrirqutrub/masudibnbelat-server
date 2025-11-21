@@ -347,8 +347,11 @@ class Utils {
       .replace(/^-+|-+$/g, "");
   }
 
-  static async validatePagination(query) {
-    const { error, value } = schemas.pagination.validate(query);
+  static validatePagination(query) {
+    const { error, value } = schemas.pagination.validate(query, {
+      allowUnknown: true,
+      stripUnknown: true,
+    });
     if (error) throw new Error(error.details[0].message);
     return value;
   }
@@ -730,29 +733,47 @@ app.get(
   Middleware.asyncHandler(async (req, res) => {
     const Article = ModelFactory.getArticle();
     const Comment = ModelFactory.getComment();
-    const { categorySlug } = req.params;
-    const { page, limit } = await Utils.validatePagination(req.query);
+    let { categorySlug } = req.params;
+
+    if (!categorySlug?.trim()) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid category slug" });
+    }
+    categorySlug = categorySlug.trim();
+
+    // <-- FIXED: no await, synchronous validation
+    let page = 1;
+    let limit = 10;
+    try {
+      const validated = Utils.validatePagination(req.query);
+      page = validated.page;
+      limit = validated.limit;
+    } catch (err) {
+      return res.status(400).json({ success: false, message: err.message });
+    }
 
     const [articles, total] = await Promise.all([
       Article.findByCategorySlug(categorySlug, { page, limit }),
       Article.countDocuments({ categorySlug }),
     ]);
 
-    const commentCounts = await Comment.getCommentCounts(
-      articles.map((a) => a._id)
-    );
+    const commentCounts =
+      articles.length > 0
+        ? await Comment.getCommentCounts(articles.map((a) => a._id))
+        : new Map();
 
     res.json({
       success: true,
-      data: articles.map((article) => ({
-        ...article,
-        _id: article._id.toString(),
-        timeAgo: Utils.timeAgo(article.createdAt),
-        comments: commentCounts.get(article._id.toString()) || 0,
+      data: articles.map((a) => ({
+        ...a,
+        _id: a._id.toString(),
+        timeAgo: Utils.timeAgo(a.createdAt),
+        comments: commentCounts.get(a._id.toString()) || 0,
       })),
       pagination: {
-        page,
-        limit,
+        page: Number(page),
+        limit: Number(limit),
         total,
         pages: Math.ceil(total / limit),
         hasMore: page * limit < total,
@@ -955,11 +976,11 @@ const PORT = process.env.PORT || 5000;
 if (process.env.NODE_ENV !== "production") {
   app.listen(PORT, async () => {
     console.log(`
-╔════════════════════════════════════════╗
-║  🚀 Server Running                     ║
-║  📍 http://localhost:${PORT}            ║
+╔══════════════════════════════════════════╗
+║  🚀 Server Running                       ║
+║  📍 http://localhost:${PORT}             ║
 ║  🕐 ${new Date().toLocaleString("en-US", { timeZone: "Asia/Dhaka" })}  ║
-╚════════════════════════════════════════╝
+╚═══════════════════════════════════════════╝
     `);
     await db.connect();
   });
