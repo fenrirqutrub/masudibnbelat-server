@@ -13,27 +13,6 @@ const app = express();
 // ────────────────────── CONFIG ──────────────────────
 app.set("trust proxy", 1);
 
-// Validate environment variables
-const requiredEnvVars = [
-  "MONGODB_URI",
-  "CLOUDINARY_CLOUD_NAME",
-  "CLOUDINARY_API_KEY",
-  "CLOUDINARY_API_SECRET",
-];
-const missingEnvVars = requiredEnvVars.filter(
-  (varName) => !process.env[varName]
-);
-
-if (missingEnvVars.length > 0) {
-  console.error(
-    "❌ Missing required environment variables:",
-    missingEnvVars.join(", ")
-  );
-  console.error(
-    "Please set these in your Vercel dashboard under Project Settings → Environment Variables"
-  );
-}
-
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
@@ -52,47 +31,50 @@ app.use(
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-// MongoDB Connection with better error handling
+// ────────────────────── MONGODB CONNECTION ──────────────────────
 let isConnected = false;
 
 const connectDB = async () => {
-  if (isConnected) {
-    return;
+  if (isConnected && mongoose.connection.readyState === 1) {
+    return true;
   }
 
   if (!process.env.MONGODB_URI) {
-    throw new Error("MONGODB_URI is not defined in environment variables");
+    console.error("❌ MONGODB_URI not found in environment variables!");
+    throw new Error("MONGODB_URI is required");
   }
 
   try {
-    await mongoose.connect(process.env.MONGODB_URI, {
+    const opts = {
+      bufferCommands: false, // Disable buffering
       maxPoolSize: 10,
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
-    });
+    };
+
+    await mongoose.connect(process.env.MONGODB_URI, opts);
     isConnected = true;
     console.log("✅ MongoDB Connected");
+    return true;
   } catch (err) {
-    console.error("❌ MongoDB Connection Error:", err.message);
+    console.error("❌ MongoDB Error:", err.message);
+    isConnected = false;
     throw err;
   }
 };
 
-// Middleware to ensure DB connection before handling requests
+// Middleware: Ensure DB connection
 app.use(async (req, res, next) => {
-  if (!isConnected) {
-    try {
-      await connectDB();
-    } catch (err) {
-      return res.status(503).json({
-        success: false,
-        message:
-          "Database connection unavailable. Please check environment variables.",
-        error: err.message,
-      });
-    }
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
+    return res.status(503).json({
+      success: false,
+      message: "Database unavailable. Check MONGODB_URI in Vercel env vars.",
+      hint: "Go to Vercel Dashboard → Settings → Environment Variables",
+    });
   }
-  next();
 });
 
 // ────────────────────── FAST LOG ──────────────────────
@@ -163,25 +145,22 @@ function escapeRegExp(string) {
 // ────────────────────── MODELS ──────────────────────
 
 // Category Model
-const Category = mongoose.model(
-  "Category",
-  new mongoose.Schema(
-    {
-      name: {
-        type: String,
-        required: true,
-        unique: true,
-        trim: true,
-        minlength: 2,
-        maxlength: 50,
-      },
-      slug: { type: String, unique: true, trim: true },
+const categorySchema = new mongoose.Schema(
+  {
+    name: {
+      type: String,
+      required: true,
+      unique: true,
+      trim: true,
+      minlength: 2,
+      maxlength: 50,
     },
-    { timestamps: true, collection: "categories" }
-  )
+    slug: { type: String, unique: true, trim: true },
+  },
+  { timestamps: true, collection: "categories" }
 );
 
-Category.schema.pre("save", function (next) {
+categorySchema.pre("save", function (next) {
   if (this.isModified("name")) {
     this.slug = this.name
       .toLowerCase()
@@ -191,63 +170,71 @@ Category.schema.pre("save", function (next) {
   next();
 });
 
+const Category =
+  mongoose.models.Category || mongoose.model("Category", categorySchema);
+
 // Unified Article Model
-const Article = mongoose.model(
-  "Article",
-  new mongoose.Schema(
-    {
-      title: { type: String, required: true, trim: true, minlength: 5 },
-      description: { type: String, required: true, trim: true, minlength: 20 },
-      img: {
-        url: { type: String, required: true },
-        publicId: { type: String, required: true },
-      },
-      category: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "Category",
-        required: true,
-      },
-      categorySlug: { type: String, required: true },
-      likes: { type: Number, default: 0 },
-      views: { type: Number, default: 0 },
+const articleSchema = new mongoose.Schema(
+  {
+    title: { type: String, required: true, trim: true, minlength: 5 },
+    description: { type: String, required: true, trim: true, minlength: 20 },
+    img: {
+      url: { type: String, required: true },
+      publicId: { type: String, required: true },
     },
-    { timestamps: true, collection: "articles" }
-  ).index({ categorySlug: 1 })
+    category: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Category",
+      required: true,
+    },
+    categorySlug: { type: String, required: true },
+    likes: { type: Number, default: 0 },
+    views: { type: Number, default: 0 },
+  },
+  { timestamps: true, collection: "articles" }
 );
+
+articleSchema.index({ categorySlug: 1 });
+
+const Article =
+  mongoose.models.Article || mongoose.model("Article", articleSchema);
 
 // Like Model
-const Like = mongoose.model(
-  "Like",
-  new mongoose.Schema(
-    {
-      articleId: {
-        type: mongoose.Schema.Types.ObjectId,
-        required: true,
-        ref: "Article",
-      },
-      userHash: { type: String, required: true },
+const likeSchema = new mongoose.Schema(
+  {
+    articleId: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: true,
+      ref: "Article",
     },
-    { timestamps: true }
-  ).index({ articleId: 1, userHash: 1 }, { unique: true })
+    userHash: { type: String, required: true },
+  },
+  { timestamps: true }
 );
 
+likeSchema.index({ articleId: 1, userHash: 1 }, { unique: true });
+
+const Like = mongoose.models.Like || mongoose.model("Like", likeSchema);
+
 // Comment Model
-const Comment = mongoose.model(
-  "Comment",
-  new mongoose.Schema(
-    {
-      articleId: {
-        type: mongoose.Schema.Types.ObjectId,
-        required: true,
-        ref: "Article",
-      },
-      text: { type: String, required: true, trim: true, maxlength: 1000 },
-      author: { type: String, default: "Anonymous" },
-      userHash: { type: String, required: true },
+const commentSchema = new mongoose.Schema(
+  {
+    articleId: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: true,
+      ref: "Article",
     },
-    { timestamps: true }
-  ).index({ articleId: 1 })
+    text: { type: String, required: true, trim: true, maxlength: 1000 },
+    author: { type: String, default: "Anonymous" },
+    userHash: { type: String, required: true },
+  },
+  { timestamps: true }
 );
+
+commentSchema.index({ articleId: 1 });
+
+const Comment =
+  mongoose.models.Comment || mongoose.model("Comment", commentSchema);
 
 // ────────────────────── CATEGORY ROUTES ──────────────────────
 app.post(
@@ -328,7 +315,6 @@ app.post(
   "/api/photography",
   upload,
   asyncHandler(async (req, res) => {
-    // Find or create photography category
     let category = await Category.findOne({ slug: "photography" });
     if (!category) {
       category = await Category.create({
@@ -434,7 +420,6 @@ app.delete(
         .json({ success: false, message: "Photo not found" });
     }
 
-    // Delete from Cloudinary
     if (article.img.publicId) {
       try {
         await cloudinary.uploader.destroy(article.img.publicId);
@@ -443,7 +428,6 @@ app.delete(
       }
     }
 
-    // Delete associated likes and comments
     await Promise.all([
       Like.deleteMany({ articleId: article._id }),
       Comment.deleteMany({ articleId: article._id }),
@@ -456,7 +440,6 @@ app.delete(
 
 // ────────────────────── ARTICLE ROUTES ──────────────────────
 
-// Create Article by category slug
 app.post(
   "/articles/:categorySlug",
   upload,
@@ -492,7 +475,6 @@ app.post(
   })
 );
 
-// Get Single Article by ID and Category Slug
 app.get(
   "/api/article-:categorySlug/:id",
   asyncHandler(async (req, res) => {
@@ -527,7 +509,6 @@ app.get(
   })
 );
 
-// Get Articles by Category Slug
 app.get(
   "/api/article-:categorySlug",
   asyncHandler(async (req, res) => {
@@ -566,7 +547,6 @@ app.get(
   })
 );
 
-// Increment View Count
 app.post(
   "/api/article-:categorySlug/:id/view",
   asyncHandler(async (req, res) => {
@@ -590,7 +570,6 @@ app.post(
   })
 );
 
-// Like Toggle
 app.post(
   "/api/article-:categorySlug/:id/like",
   asyncHandler(async (req, res) => {
@@ -622,7 +601,6 @@ app.post(
   })
 );
 
-// Get Comments
 app.get(
   "/api/article-:categorySlug/:id/comments",
   asyncHandler(async (req, res) => {
@@ -645,7 +623,6 @@ app.get(
   })
 );
 
-// Add Comment
 app.post(
   "/api/article-:categorySlug/:id/comments",
   asyncHandler(async (req, res) => {
@@ -682,7 +659,6 @@ app.post(
   })
 );
 
-// Share
 app.post(
   "/api/article-:categorySlug/:id/share",
   asyncHandler(async (req, res) => {
@@ -705,12 +681,10 @@ app.post(
 app.get("/", (_, res) =>
   res.json({
     name: "Masud ibn Belat API",
-    status: isConnected ? "running" : "database disconnected",
+    status: isConnected ? "✅ running" : "❌ database disconnected",
+    mongodb:
+      mongoose.connection.readyState === 1 ? "connected" : "disconnected",
     time: new Date().toLocaleString("en-US", { timeZone: "Asia/Dhaka" }),
-    env: {
-      hasMongoUri: !!process.env.MONGODB_URI,
-      hasCloudinary: !!process.env.CLOUDINARY_CLOUD_NAME,
-    },
   })
 );
 
@@ -718,7 +692,10 @@ app.get("/health", (_, res) =>
   res.json({
     db: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
     uptime: process.uptime(),
-    isConnected,
+    env: {
+      hasMongoUri: !!process.env.MONGODB_URI,
+      hasCloudinary: !!process.env.CLOUDINARY_CLOUD_NAME,
+    },
   })
 );
 
@@ -736,15 +713,9 @@ app.use((err, _, res, __) => {
 // ────────────────────── START SERVER ──────────────────────
 const PORT = process.env.PORT || 5000;
 
-// For Vercel, don't call app.listen()
 if (process.env.NODE_ENV !== "production") {
   app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
-    console.log(
-      `BD Time: ${new Date().toLocaleString("en-US", {
-        timeZone: "Asia/Dhaka",
-      })}`
-    );
   });
 }
 
