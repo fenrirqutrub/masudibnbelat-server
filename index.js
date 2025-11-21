@@ -31,6 +31,43 @@ app.use(
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
+// ────────────────────── MONGODB CONNECTION (CRITICAL FIX) ──────────────────────
+let isConnected = false;
+
+const connectDB = async () => {
+  if (isConnected) {
+    return;
+  }
+
+  try {
+    const db = await mongoose.connect(process.env.MONGODB_URI, {
+      maxPoolSize: 10,
+      serverSelectionTimeoutMS: 10000,
+      socketTimeoutMS: 45000,
+      bufferCommands: false, // Critical for serverless
+    });
+
+    isConnected = db.connections[0].readyState === 1;
+    console.log("MongoDB Connected");
+  } catch (error) {
+    console.error("MongoDB Connection Error:", error.message);
+    throw error;
+  }
+};
+
+// Middleware to ensure DB connection before each request
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (error) {
+    res.status(503).json({
+      success: false,
+      message: "Database connection failed. Please try again.",
+    });
+  }
+});
+
 // ────────────────────── FAST LOG ──────────────────────
 app.use((req, _, next) => {
   const start = Date.now();
@@ -99,23 +136,25 @@ function escapeRegExp(string) {
 // ────────────────────── MODELS ──────────────────────
 
 // Category Model
-const Category = mongoose.model(
-  "Category",
-  new mongoose.Schema(
-    {
-      name: {
-        type: String,
-        required: true,
-        unique: true,
-        trim: true,
-        minlength: 2,
-        maxlength: 50,
+const Category =
+  mongoose.models.Category ||
+  mongoose.model(
+    "Category",
+    new mongoose.Schema(
+      {
+        name: {
+          type: String,
+          required: true,
+          unique: true,
+          trim: true,
+          minlength: 2,
+          maxlength: 50,
+        },
+        slug: { type: String, unique: true, trim: true },
       },
-      slug: { type: String, unique: true, trim: true },
-    },
-    { timestamps: true, collection: "categories" }
-  )
-);
+      { timestamps: true, collection: "categories" }
+    )
+  );
 
 Category.schema.pre("save", function (next) {
   if (this.isModified("name")) {
@@ -128,62 +167,73 @@ Category.schema.pre("save", function (next) {
 });
 
 // Unified Article Model
-const Article = mongoose.model(
-  "Article",
-  new mongoose.Schema(
-    {
-      title: { type: String, required: true, trim: true, minlength: 5 },
-      description: { type: String, required: true, trim: true, minlength: 20 },
-      img: {
-        url: { type: String, required: true },
-        publicId: { type: String, required: true },
+const Article =
+  mongoose.models.Article ||
+  mongoose.model(
+    "Article",
+    new mongoose.Schema(
+      {
+        title: { type: String, required: true, trim: true, minlength: 5 },
+        description: {
+          type: String,
+          required: true,
+          trim: true,
+          minlength: 20,
+        },
+        img: {
+          url: { type: String, required: true },
+          publicId: { type: String, required: true },
+        },
+        category: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "Category",
+          required: true,
+        },
+        categorySlug: { type: String, required: true },
+        likes: { type: Number, default: 0 },
+        views: { type: Number, default: 0 },
       },
-      category: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "Category",
-        required: true,
-      },
-      categorySlug: { type: String, required: true },
-      likes: { type: Number, default: 0 },
-      views: { type: Number, default: 0 },
-    },
-    { timestamps: true, collection: "articles" }
-  ).index({ categorySlug: 1 })
-);
+      { timestamps: true, collection: "articles" }
+    ).index({ categorySlug: 1 })
+  );
 
 // Like Model
-const Like = mongoose.model(
-  "Like",
-  new mongoose.Schema(
-    {
-      articleId: {
-        type: mongoose.Schema.Types.ObjectId,
-        required: true,
-        ref: "Article",
+const Like =
+  mongoose.models.Like ||
+  mongoose.model(
+    "Like",
+    new mongoose.Schema(
+      {
+        articleId: {
+          type: mongoose.Schema.Types.ObjectId,
+          required: true,
+          ref: "Article",
+        },
+        userHash: { type: String, required: true },
       },
-      userHash: { type: String, required: true },
-    },
-    { timestamps: true }
-  ).index({ articleId: 1, userHash: 1 }, { unique: true })
-);
+      { timestamps: true }
+    ).index({ articleId: 1, userHash: 1 }, { unique: true })
+  );
 
 // Comment Model
-const Comment = mongoose.model(
-  "Comment",
-  new mongoose.Schema(
-    {
-      articleId: {
-        type: mongoose.Schema.Types.ObjectId,
-        required: true,
-        ref: "Article",
+const Comment =
+  mongoose.models.Comment ||
+  mongoose.model(
+    "Comment",
+    new mongoose.Schema(
+      {
+        articleId: {
+          type: mongoose.Schema.Types.ObjectId,
+          required: true,
+          ref: "Article",
+        },
+        text: { type: String, required: true, trim: true, maxlength: 1000 },
+        author: { type: String, default: "Anonymous" },
+        userHash: { type: String, required: true },
       },
-      text: { type: String, required: true, trim: true, maxlength: 1000 },
-      author: { type: String, default: "Anonymous" },
-      userHash: { type: String, required: true },
-    },
-    { timestamps: true }
-  ).index({ articleId: 1 })
-);
+      { timestamps: true }
+    ).index({ articleId: 1 })
+  );
 
 // ────────────────────── CATEGORY ROUTES ──────────────────────
 app.post(
@@ -258,7 +308,6 @@ app.delete(
 );
 
 // ────────────────────── PHOTOGRAPHY ROUTES ──────────────────────
-// ────────────────────── PHOTOGRAPHY ROUTES ──────────────────────
 
 // POST: Upload photo to photography category
 app.post(
@@ -282,8 +331,8 @@ app.post(
 
     const { secure_url, public_id } = await uploadImg(req.file.buffer);
     const article = await Article.create({
-      title: "Photography Image", // Meets 5 char minimum
-      description: "A beautiful photography moment captured in this image.", // Meets 20 char minimum
+      title: "Photography Image",
+      description: "A beautiful photography moment captured in this image.",
       img: { url: secure_url, publicId: public_id },
       category: category._id,
       categorySlug: "photography",
@@ -304,7 +353,7 @@ app.get(
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
-      .select("img views createdAt") // Only select needed fields
+      .select("img views createdAt")
       .lean();
 
     const total = await Article.countDocuments({ categorySlug: "photography" });
@@ -665,22 +714,7 @@ app.use((err, _, res, __) => {
     .json({ success: false, message: err.message || "Server Error" });
 });
 
-// ────────────────────── START SERVER ──────────────────────
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-  console.log(
-    `BD Time: ${new Date().toLocaleString("en-US", { timeZone: "Asia/Dhaka" })}`
-  );
-});
-
-mongoose
-  .connect(process.env.MONGODB_URI, {
-    maxPoolSize: 10,
-    serverSelectionTimeoutMS: 5000,
-    socketTimeoutMS: 45000,
-  })
-  .then(() => console.log("MongoDB Connected"))
-  .catch((err) => console.error("MongoDB Error:", err.message));
-
+// ────────────────────── VERCEL SERVERLESS EXPORT ──────────────────────
+// For Vercel, we export the app without listening
+// Connection is handled per request via middleware
 export default app;
