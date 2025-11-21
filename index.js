@@ -825,7 +825,7 @@ app.get(
 );
 
 app.post(
-  "/api/article-:categorySlug/:id/view",
+  "/api/articles/:categorySlug/:id/view",
   Middleware.validateId(),
   Middleware.asyncHandler(async (req, res) => {
     const Article = ModelFactory.getArticle();
