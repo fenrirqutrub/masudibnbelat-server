@@ -1,0 +1,9 @@
+
+# .env
+MONGODB_URI=mongodb+srv://??username??:??password??@cluster0.2xq5f1a.mongodb.net/blogdb?retryWrites=true&w=majority
+
+PORT=5000
+
+CLOUDINARY_URL=??
+ALLOWED_ORIGINS=http://localhost:5173
+JWT_SECRET=9b1ab7a309189e47042237147441796bbf8eae5d4b67310a07c9040621f41d3c6a1e5a81b02e8125998626cdf80e0732393e9b1027aaf2ef78c7dd8b2296d007
